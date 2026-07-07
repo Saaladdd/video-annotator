@@ -1,0 +1,164 @@
+# =========================================================================
+# Egocentric Video Auto-Labeler — Configuration
+# All values here are defaults and can be overridden on the CLI.
+# =========================================================================
+
+# ---- Backend selection ----
+# backend: "local" | "api"
+backend: local
+
+# ---- Local model settings (used when backend == "local") ----
+local:
+  # Tuned by default for a 6 GB laptop GPU (e.g. RTX 4050 Mobile).
+  # Qwen2.5-VL-3B in 4-bit fits comfortably (~3 GB weights + room for frames).
+  # If you have >=16 GB VRAM, switch to "Qwen/Qwen2.5-VL-7B-Instruct" and
+  # optionally set load_in_4bit: false.
+  model_id: "Qwen/Qwen2.5-VL-3B-Instruct"
+  device: "auto"            # "auto" | "cuda" | "cpu" | "mps"
+  dtype: "bfloat16"         # "bfloat16" | "float16" | "float32"
+  load_in_4bit: true        # requires `bitsandbytes` (uncomment in requirements.txt)
+  max_new_tokens: 1024
+  temperature: 0.2
+  # Optional: max pixels per image (helps control VRAM). null = model default.
+  # 451584 ≈ 672x672. Good balance of quality vs VRAM on 6 GB cards.
+  max_pixels: 451584
+
+# ---- API backend settings (used when backend == "api") ----
+api:
+  # provider options:
+  #   Cloud:  "openai" | "anthropic" | "openai-compatible"
+  #   Local server (auto localhost URL):  "ollama" | "lmstudio" | "vllm"
+  #     - ollama    -> http://localhost:11434/v1
+  #     - lmstudio  -> http://localhost:1234/v1
+  #     - vllm      -> http://localhost:8000/v1
+  provider: "openai"
+  model: "gpt-4o-mini"
+  base_url: null            # override any provider default (e.g. remote server)
+  api_key_env: "OPENAI_API_KEY"   # env var that holds the key
+  max_tokens: 1024
+  temperature: 0.2
+  request_timeout: 120
+  max_retries: 3
+
+# ---- Frame sampling ----
+sampling:
+  # Choose ONE of these strategies:
+  #   num_frames: fixed N frames uniformly sampled across the whole clip
+  #   target_fps: sample at this rate (fps), ignored if num_frames is set
+  # For whole-video subtask segmentation, sampling at a steady rate (target_fps)
+  # is recommended so the timeline has even temporal resolution. ~2 fps is a good
+  # default for egocentric footage.
+  num_frames: null
+  target_fps: 2
+  # Resize longest side (pixels) before sending to model.
+  # null = preserve original frame resolution (default, no resize).
+  resize_longest: null
+  # Optional temporal window in seconds. null = full video.
+  start_sec: null
+  end_sec: null
+  # Attach a "t=1.500s frame 24/360" label to every frame image sent to the
+  # model. Disabled by default to keep frame pixels untouched.
+  overlay_timestamp: false
+  # Where the label goes. The extend-* modes add a small strip outside the
+  # frame so no original pixel is covered (recommended for annotation).
+  # Options: extend-bottom | extend-top |
+  #          overlay-topleft | overlay-topright |
+  #          overlay-bottomleft | overlay-bottomright
+  overlay_position: extend-bottom
+
+# ---- Prompt ----
+prompt:
+  # Path to the SOP prompt template. Edit that file freely.
+  # It may reference:
+  #   {video_name}, {num_frames}, {duration_sec}, {fps}
+  #   {global_summary}   (whole-video timeline built in the global-context stage)
+  #   {frames_manifest}  (per-image list mapping each sent image to its timestamp)
+  # Subtask-segments mode (default) also provides:
+  #   {chunk_index}, {chunk_count}, {chunk_frame_count}
+  #   {chunk_start_timestamp_sec}, {chunk_end_timestamp_sec}
+  #   {prior_chunks_summary}  (rolling recap of subtasks from earlier chunks)
+  # Per-frame / context-window modes also provide:
+  #   {sampled_position}, {frame_index}, {timestamp_sec}
+  #   {context_start_position}, {context_end_position}, {context_frame_count}
+  #   {context_start_timestamp_sec}, {context_end_timestamp_sec}
+  path: "prompts/default_sop.txt"
+
+# ---- Global video context (stage 1: whole-video understanding) ----
+# The app first samples a small set of coarse frames across the entire video,
+# gets a brief description of each (single-image call, so it works on Ollama
+# and any single-image local vision server), and assembles a compact timeline
+# that is injected into every per-frame annotation prompt as {global_summary}.
+global_context:
+  enabled: true
+  # How many coarse frames to sample across the whole video for global context.
+  num_frames: 8
+  # Prompt used to describe each coarse frame briefly.
+  snippet_prompt_path: "prompts/global_snippet.txt"
+
+# ---- Labeling mode ----
+labeling:
+  # subtask_segments -> (DEFAULT) process the video in overlapping chunks of frames,
+  #                     ask the SOP prompt for a subtask timeline per chunk, then
+  #                     stitch + de-duplicate into ONE continuous whole-video
+  #                     timeline. This is the mode the subtask SOP is designed for.
+  # context_window   -> run once per sampled frame, with neighboring frames as context
+  # per_frame        -> run the prompt once per sampled frame, no temporal context
+  # multi_frame      -> send all sampled frames in a single model call
+  mode: subtask_segments
+
+  # -- subtask_segments settings --
+  # How many sampled frames go into each chunk sent to the model. Larger chunks
+  # give the model more temporal context but cost more tokens/VRAM per call.
+  chunk_frames: 12
+  # Frames shared between consecutive chunks so actions crossing a boundary are
+  # seen in both chunks (duplicates are merged automatically).
+  chunk_overlap: 2
+
+  # Carry a rolling recap of previously-annotated subtasks into each new chunk's
+  # prompt as {prior_chunks_summary}. This keeps object names, hand assignments,
+  # and in-progress actions consistent across chunks.
+  prior_chunks_summary:
+    enabled: true
+    # timeline: reuse the merged subtask lines from earlier chunks (free, factual).
+    # model:    run a small text-only backend call per chunk to compress those
+    #           lines into prose using prompts/chunk_summary.txt (costs 1 extra
+    #           call per chunk but scales better on long videos).
+    mode: timeline
+    # Cap how many prior subtask lines are carried forward. Use 0 for no cap.
+    max_lines: 40
+    prompt_path: "prompts/chunk_summary.txt"
+
+  # -- context_window settings (only used in that mode) --
+  context_frames_before: 1
+  context_frames_after: 1
+
+# ---- Output ----
+output:
+  dir: "outputs"
+  # If true, also emit a JSON sidecar with metadata alongside the .txt file.
+  emit_json_sidecar: false
+  # If true (subtask_segments mode), also write a <video>.timeline.csv with
+  # start_sec, end_sec, subtask columns for downstream annotation tooling.
+  emit_csv: false
+  # Overwrite existing outputs. If false, existing files are skipped.
+  overwrite: false
+
+# ---- Video input ----
+video:
+  # Extensions considered when a directory is passed as input.
+  extensions:
+    - .mp4
+    - .mov
+    - .avi
+    - .mkv
+    - .webm
+    - .flv
+    - .m4v
+    - .wmv
+    - .mpg
+    - .mpeg
+    - .3gp
+    - .ts
+    - .mts
+    - .m2ts
+    - .ogv

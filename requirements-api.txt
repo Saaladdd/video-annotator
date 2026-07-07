@@ -1,0 +1,21 @@
+# Lightweight install when using --backend api (localhost or cloud).
+# No torch, transformers, bitsandbytes, or CUDA needed in this app.
+
+# Core
+pyyaml>=6.0.1
+tqdm>=4.66.0
+python-dotenv>=1.0.1
+pillow>=10.3.0
+
+# Video decoding
+decord>=0.6.0
+opencv-python>=4.9.0.80
+av>=12.0.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.5.1
+
+# API backends
+openai>=1.40.0
+anthropic>=0.34.0
+requests>=2.32.0
+tenacity>=8.5.0

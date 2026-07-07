@@ -1,0 +1,30 @@
+# Core
+pyyaml>=6.0.1
+tqdm>=4.66.0
+python-dotenv>=1.0.1
+pillow>=10.3.0
+numpy>=1.26.0
+
+# Video decoding (multi-format). decord is fastest; opencv + av are fallbacks.
+decord>=0.6.0
+opencv-python>=4.9.0.80
+av>=12.0.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.5.1
+
+# Local model backend (Qwen2.5-VL and other HF VLMs)
+# NOTE: install a torch build matching your CUDA/CPU from https://pytorch.org first.
+torch>=2.3.0
+transformers>=4.49.0
+accelerate>=0.33.0
+qwen-vl-utils>=0.0.10
+# 4-bit quantization (required by the default 6 GB-friendly config).
+# Linux/Windows-CUDA only. If you're on macOS/CPU, set load_in_4bit: false
+# in config.yaml (or pass --dtype float16) and you can remove this line.
+bitsandbytes>=0.43.0
+
+# API backends
+openai>=1.40.0
+anthropic>=0.34.0
+requests>=2.32.0
+tenacity>=8.5.0
