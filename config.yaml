@@ -4,7 +4,12 @@
 # =========================================================================
 
 # ---- Backend selection ----
-# backend: "local" | "api"
+# backend: "local" | "api" | "remote"
+#   local  : run the vision model in-process on this machine (needs torch/CUDA)
+#   api    : send frames+prompt to a cloud LLM API or a nearby OpenAI-compatible server
+#   remote : send frames+prompt to our own GPU worker (labeler.worker.server) over HTTP.
+#            Storage (video files) and outputs stay LOCAL on this machine; only
+#            the prompt and base64 frames are streamed to the GPU box.
 backend: local
 
 # ---- Local model settings (used when backend == "local") ----
@@ -39,6 +44,25 @@ api:
   temperature: 0.2
   request_timeout: 120
   max_retries: 3
+
+# ---- Remote GPU worker settings (used when backend == "remote") ----
+# The worker itself is a small HTTP server (labeler/worker/server.py) that
+# runs on a machine with a GPU and reuses the SAME LocalBackend code as the
+# in-process "local" backend. Videos and outputs never leave this machine —
+# only the prompt text and base64-JPEG frames are sent, and only the model's
+# text answer comes back.
+remote:
+  # Full URL of the running worker, e.g. http://gpu-host:8000
+  url: null
+  # Optional bearer token. If set, must match the worker's --auth-token.
+  # Can also be provided via env var (see api_key_env-style overrides in .env).
+  auth_token: null
+  # Long inference calls (chunk with 12 frames on a 3B VLM) can take a while.
+  request_timeout: 600
+  max_retries: 3
+  # JPEG quality used to encode frames before sending over the wire.
+  # Lower values reduce bandwidth at some cost to visual fidelity.
+  jpeg_quality: 90
 
 # ---- Frame sampling ----
 sampling:

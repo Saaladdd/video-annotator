@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -65,7 +66,13 @@ def parse_args() -> argparse.Namespace:
                    help="Also write a .csv of the subtask timeline (subtask-segments mode).")
 
     # Backend
-    p.add_argument("--backend", choices=["local", "api"], default=None, help="Backend to use.")
+    p.add_argument(
+        "--backend",
+        choices=["local", "api", "remote"],
+        default=None,
+        help="Backend to use. 'remote' talks to a GPU worker we run ourselves "
+             "(labeler.worker.server) — videos and outputs stay local.",
+    )
 
     # Local
     p.add_argument("--model", default=None, help="Local HuggingFace model id.")
@@ -88,6 +95,26 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--api-model", default=None, help="Model name at the API provider.")
     p.add_argument("--api-base-url", default=None, help="Override API base URL.")
+
+    # Remote GPU worker
+    p.add_argument(
+        "--worker-url",
+        default=None,
+        help="Base URL of the remote GPU worker (used with --backend remote). "
+             "e.g. http://gpu-host:8000",
+    )
+    p.add_argument(
+        "--worker-token",
+        default=None,
+        help="Bearer token for the remote worker (must match its --auth-token). "
+             "May also be read from WORKER_AUTH_TOKEN env var.",
+    )
+    p.add_argument(
+        "--worker-timeout",
+        type=float,
+        default=None,
+        help="Per-request timeout in seconds for the remote worker.",
+    )
 
     # Sampling
     p.add_argument("--num-frames", "-n", type=int, default=None,
@@ -230,6 +257,16 @@ def build_overrides(args: argparse.Namespace) -> dict:
     if args.max_new_tokens is not None: api["max_tokens"] = args.max_new_tokens
     if args.temperature is not None: api["temperature"] = args.temperature
     if api: ov["api"] = api
+
+    remote: dict = {}
+    if args.worker_url is not None: remote["url"] = args.worker_url
+    if args.worker_token is not None: remote["auth_token"] = args.worker_token
+    else:
+        env_token = os.environ.get("WORKER_AUTH_TOKEN")
+        if env_token:
+            remote["auth_token"] = env_token
+    if args.worker_timeout is not None: remote["request_timeout"] = args.worker_timeout
+    if remote: ov["remote"] = remote
 
     sampling: dict = {}
     if args.num_frames is not None: sampling["num_frames"] = args.num_frames

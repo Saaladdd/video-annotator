@@ -34,7 +34,7 @@ OpenAI-compatible endpoint like Ollama / vLLM / LM Studio / Together / Groq).
 ## Features
 
 - **Subtask-segmentation by default**: chunked processing stitched into one continuous, de-duplicated whole-video timeline.
-- **Backend choice**: local HuggingFace VLM *or* API.
+- **Backend choice**: local HuggingFace VLM, cloud/local API, *or* a bundled HTTP GPU worker you run on a remote GPU box (storage and outputs stay on the client machine).
 - **Global-context timeline** built from coarse whole-video sampling, compatible with single-image local servers.
 - **Configurable frame sampling**: rate-based `--target-fps` (default 2 fps) OR fixed `--num-frames`, with optional time window.
 - **Tunable chunking**: `--chunk-frames` / `--chunk-overlap` trade context vs cost, with automatic boundary de-duplication.
@@ -166,7 +166,63 @@ python main.py --input clip.mp4 --backend api \
 
 Keys can also live in a `.env` file at the repo root (see `.env.example`).
 
-#### 1c. Local vision servers (Ollama / LM Studio / vLLM)
+#### 1c. Remote GPU worker (our own HTTP wrapper around the local model)
+
+If you don't have a GPU on this machine but do have access to a cloud GPU
+box, run the bundled worker there and point the labeler at it. **Videos and
+outputs stay on this machine** — only the prompt and base64-JPEG frames
+travel to the GPU, and only the label text comes back.
+
+```bash
+# --- On the GPU box (one-time setup) ---
+git clone <this-repo> && cd annotate
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
+pip install -r requirements-worker.txt
+
+# Start the worker (mirrors LocalBackend's flags 1:1).
+python -m labeler.worker.server \
+  --host 0.0.0.0 --port 8000 \
+  --model Qwen/Qwen2.5-VL-3B-Instruct --load-in-4bit --preload
+
+# Optional: require a shared secret from clients.
+python -m labeler.worker.server --auth-token $(openssl rand -hex 16) ...
+```
+
+```bash
+# --- On this (client) machine ---
+# Only the light client deps are needed — no torch, no CUDA.
+pip install -r requirements-api.txt
+
+python main.py --input clip.mp4 \
+  --backend remote \
+  --worker-url http://<gpu-host>:8000 \
+  [--worker-token <same-token-as-above>]
+```
+
+Config equivalent (in `config.yaml`):
+
+```yaml
+backend: remote
+remote:
+  url: http://gpu-host:8000
+  auth_token: null           # or your shared secret
+  request_timeout: 600
+  jpeg_quality: 90
+```
+
+The worker uses the same `LocalBackend` internally, so every local-backend
+knob (`--model`, `--dtype`, `--load-in-4bit`, `--max-pixels`, etc.) is set
+on the worker's command line rather than the client's. All labeling modes
+(`subtask-segments`, `context-window`, `per-frame`, `multi-frame`), chunking,
+global-context and prior-summary options continue to work unchanged — the
+client just swaps `LocalBackend` for a thin HTTP client.
+
+Security notes: bind the worker to a private network / VPN, or set
+`--auth-token` and put the port behind TLS-terminating reverse proxy if you
+expose it publicly.
+
+#### 1d. Local vision servers (Ollama / LM Studio / vLLM)
 
 Convenience providers auto-fill the `base_url` to the standard localhost port
 for that server. Under the hood they use the OpenAI schema.
@@ -560,9 +616,13 @@ The `context-window` mode additionally uses `labeling.context_frames_before/afte
 │   ├── segments.py           # chunking, subtask-line parsing, timeline merge
 │   ├── overlays.py           # non-occluding timestamp overlays
 │   ├── output.py             # text/json/csv writers
-│   └── backends/
-│       ├── base.py           # backend ABC
-│       ├── local_backend.py  # HF transformers (default: Qwen2.5-VL)
-│       └── api_backend.py    # OpenAI / Anthropic / OpenAI-compatible
+│   ├── backends/
+│   │   ├── base.py           # backend ABC
+│   │   ├── local_backend.py  # HF transformers (default: Qwen2.5-VL)
+│   │   ├── api_backend.py    # OpenAI / Anthropic / OpenAI-compatible
+│   │   └── remote_backend.py # HTTP client for our own GPU worker
+│   └── worker/
+│       └── server.py         # GPU-side FastAPI wrapper around LocalBackend
+├── requirements-worker.txt   # extra deps to install on the GPU box
 └── outputs/                  # generated .label.txt files
 ```

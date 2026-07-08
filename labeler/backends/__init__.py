@@ -15,4 +15,9 @@ def build_backend(cfg: dict) -> LabelerBackend:
     if kind == "api":
         from .api_backend import ApiBackend
         return ApiBackend(cfg["api"])
-    raise ValueError(f"Unknown backend: {kind!r}. Expected 'local' or 'api'.")
+    if kind == "remote":
+        from .remote_backend import RemoteBackend
+        return RemoteBackend(cfg.get("remote") or {})
+    raise ValueError(
+        f"Unknown backend: {kind!r}. Expected 'local', 'api', or 'remote'."
+    )
