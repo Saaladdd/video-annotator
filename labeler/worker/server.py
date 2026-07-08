@@ -26,8 +26,6 @@ The client (labeler) then runs with:
 Storage (videos) and outputs stay on the client. Only prompt text and
 base64-JPEG frames traverse the network; only the label text comes back.
 """
-from __future__ import annotations
-
 import argparse
 import base64
 import io
@@ -37,6 +35,7 @@ import sys
 from typing import List, Optional
 
 from PIL import Image
+from pydantic import BaseModel
 
 from labeler.backends.local_backend import LocalBackend
 
@@ -45,6 +44,15 @@ log = logging.getLogger("labeler.worker")
 # Global backend instance (loaded once at startup, reused across requests).
 _backend: Optional[LocalBackend] = None
 _auth_token: Optional[str] = None
+
+
+class LabelRequest(BaseModel):
+    prompt: str
+    frames: List[str] = []
+
+
+class LabelResponse(BaseModel):
+    text: str
 
 
 def _decode_frame(b64: str) -> Image.Image:
@@ -64,8 +72,7 @@ def _require_auth(authorization_header: Optional[str]) -> None:
 def _build_app():
     """Import FastAPI lazily so the module loads even without it installed."""
     try:
-        from fastapi import FastAPI, Header, HTTPException
-        from pydantic import BaseModel
+        from fastapi import Body, FastAPI, Header, HTTPException
     except ImportError as e:
         raise RuntimeError(
             "The worker requires fastapi + pydantic + uvicorn. "
@@ -73,13 +80,6 @@ def _build_app():
         ) from e
 
     app = FastAPI(title="Auto-Labeler GPU Worker", version="1.0.0")
-
-    class LabelRequest(BaseModel):
-        prompt: str
-        frames: List[str] = []
-
-    class LabelResponse(BaseModel):
-        text: str
 
     @app.get("/health")
     def health():
@@ -93,7 +93,10 @@ def _build_app():
         return _backend.info() | {"backend": "worker(local)"}
 
     @app.post("/label", response_model=LabelResponse)
-    def label(req: LabelRequest, authorization: Optional[str] = Header(default=None)):
+    def label(
+        req: LabelRequest = Body(...),
+        authorization: Optional[str] = Header(default=None),
+    ):
         _require_auth(authorization)
         if _backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialised.")
