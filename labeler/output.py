@@ -97,7 +97,10 @@ def write_label_txt(
     label_mode: str,
     global_summary_text: str | None = None,
     global_snippets: list[dict] | None = None,
+    user_context: str | None = None,
     subtask_timeline: list[dict] | None = None,
+    raw_subtask_timeline: list[dict] | None = None,
+    reviewer_info: dict | None = None,
     chunk_outputs: list[dict] | None = None,
     overwrite: bool = False,
     emit_json_sidecar: bool = False,
@@ -134,6 +137,15 @@ def write_label_txt(
 
     body: list[str] = []
 
+    if user_context and user_context.strip():
+        body.extend(
+            [
+                "----- USER-PROVIDED VIDEO CONTEXT -----",
+                user_context.strip(),
+                "",
+            ]
+        )
+
     if global_snippets:
         body.extend(
             [
@@ -144,14 +156,37 @@ def write_label_txt(
         )
 
     if subtask_timeline is not None:
-        # Primary deliverable: the continuous subtask timeline for the whole video.
-        body.extend(
-            [
-                "===== SUBTASK TIMELINE (whole video) =====",
-                format_timeline(subtask_timeline),
-                "",
-            ]
+        reviewer_applied = bool(reviewer_info and reviewer_info.get("applied"))
+        primary_header = (
+            "===== SUBTASK TIMELINE (whole video, reviewed) ====="
+            if reviewer_applied
+            else "===== SUBTASK TIMELINE (whole video) ====="
         )
+        body.extend([primary_header, format_timeline(subtask_timeline), ""])
+        if reviewer_applied and raw_subtask_timeline is not None:
+            body.extend(
+                [
+                    (
+                        f"----- REVIEW SUMMARY: reviewer collapsed / corrected "
+                        f"{reviewer_info.get('raw_count', len(raw_subtask_timeline))} "
+                        f"first-pass entries into "
+                        f"{reviewer_info.get('reviewed_count', len(subtask_timeline))} "
+                        f"reviewed entries -----"
+                    ),
+                    "",
+                    "----- RAW FIRST-PASS TIMELINE (before review, for audit) -----",
+                    format_timeline(raw_subtask_timeline),
+                    "",
+                ]
+            )
+        elif reviewer_info is not None and not reviewer_info.get("applied"):
+            body.extend(
+                [
+                    "----- REVIEW SUMMARY: reviewer pass FAILED / returned no usable "
+                    "output; timeline above is the raw stitched output -----",
+                    "",
+                ]
+            )
         if chunk_outputs:
             body.extend(
                 [
@@ -204,6 +239,8 @@ def write_label_txt(
             "global_summary_text": global_summary_text,
             "global_snippets": global_snippets,
             "subtask_timeline": subtask_timeline,
+            "raw_subtask_timeline": raw_subtask_timeline,
+            "reviewer_info": reviewer_info,
             "chunk_outputs": chunk_outputs,
             "label": label_text,
             "frame_outputs": frame_outputs,

@@ -231,6 +231,39 @@ def parse_args() -> argparse.Namespace:
 
     # Prompt
     p.add_argument("--prompt", default=None, help="Path to a prompt template (overrides config).")
+    p.add_argument(
+        "--context",
+        "--video-context",
+        dest="video_context",
+        default=None,
+        help="One-sentence description of what the video shows (e.g. 'A person "
+             "restocks bottles from a shopping basket onto a store shelf'). "
+             "Injected into every prompt as authoritative material-flow context. "
+             "Massively reduces hallucinations for repetitive tasks.",
+    )
+
+    # Post-process reviewer (text-only correction pass on the stitched timeline)
+    p.add_argument(
+        "--review",
+        dest="review",
+        action="store_true",
+        default=None,
+        help="After chunking, run a text-only reviewer pass on the stitched "
+             "timeline to fix pick/place direction errors, merge duplicates, "
+             "and remove hallucinations (default: on via config for "
+             "subtask-segments mode).",
+    )
+    p.add_argument(
+        "--no-review",
+        dest="review",
+        action="store_false",
+        help="Disable the post-process reviewer pass.",
+    )
+    p.add_argument(
+        "--review-prompt",
+        default=None,
+        help="Path to the reviewer prompt template. Default: prompts/review_timeline.txt.",
+    )
 
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args()
@@ -311,6 +344,14 @@ def build_overrides(args: argparse.Namespace) -> dict:
         if args.prior_summary_prompt is not None:
             ps["prompt_path"] = args.prior_summary_prompt
 
+    if args.review is not None or args.review_prompt is not None:
+        ov.setdefault("labeling", {})
+        rv: dict = ov["labeling"].setdefault("review", {})
+        if args.review is not None:
+            rv["enabled"] = bool(args.review)
+        if args.review_prompt is not None:
+            rv["prompt_path"] = args.review_prompt
+
     gctx: dict = {}
     if args.global_context is not None:
         gctx["enabled"] = bool(args.global_context)
@@ -326,6 +367,8 @@ def build_overrides(args: argparse.Namespace) -> dict:
         ov.setdefault("sampling", {})["overlay_position"] = args.overlay_position
 
     if args.prompt: ov["prompt"] = {"path": args.prompt}
+    if args.video_context is not None:
+        ov.setdefault("prompt", {})["video_context"] = args.video_context
     output: dict = {}
     if args.output_dir: output["dir"] = args.output_dir
     if args.overwrite: output["overwrite"] = True
@@ -356,6 +399,7 @@ def render_prompt(
     chunk_start_timestamp_sec: float | None = None,
     chunk_end_timestamp_sec: float | None = None,
     prior_chunks_summary: str | None = None,
+    user_context: str | None = None,
 ) -> str:
     """Fill in prompt placeholders using video-level and optional frame-level metadata."""
     replacements = {
@@ -387,6 +431,7 @@ def render_prompt(
             "" if chunk_end_timestamp_sec is None else f"{chunk_end_timestamp_sec:.3f}"
         ),
         "prior_chunks_summary": prior_chunks_summary or "(none — this is the first chunk)",
+        "user_context": (user_context or "").strip() or "(none provided)",
     }
     out = template
     for k, v in replacements.items():
@@ -445,6 +490,7 @@ def _model_summary(
     chunk_count: int,
     global_summary: str | None,
     log: logging.Logger,
+    user_context: str | None = None,
 ) -> str:
     """Compress prior subtask lines into a prose paragraph via a text-only call.
 
@@ -460,6 +506,7 @@ def _model_summary(
         chunk_index=chunk_index,
         chunk_count=chunk_count,
         prior_chunks_summary=timeline_text,
+        user_context=user_context,
     )
     try:
         text = (backend.label(prompt, []) or "").strip()
@@ -467,6 +514,57 @@ def _model_summary(
     except Exception as e:
         log.warning("Prior-chunks model summary failed: %s — using timeline text.", e)
         return timeline_text
+
+
+def review_timeline(
+    backend,
+    review_template: str,
+    raw_segments: list[dict],
+    global_summary: str | None,
+    duration_sec: float,
+    log: logging.Logger,
+    user_context: str | None = None,
+) -> tuple[list[dict], str] | tuple[None, None]:
+    """Run a text-only correction pass on the stitched timeline.
+
+    Sends zero image frames to the backend — the reviewer sees only the
+    global summary and the noisy timeline text. Returns
+    (reviewed_segments, raw_reviewer_response) on success, or (None, None) if
+    the reviewer returned garbage / failed.
+    """
+    if not raw_segments:
+        return None, None
+    raw_text = format_timeline(raw_segments)
+    prompt = (
+        review_template
+        .replace("{global_summary}", global_summary or "(global summary not available)")
+        .replace("{raw_timeline}", raw_text)
+        .replace("{num_entries}", str(len(raw_segments)))
+        .replace("{duration_sec:.2f}", f"{duration_sec:.2f}")
+        .replace("{duration_sec}", f"{duration_sec:.2f}")
+        .replace("{user_context}", (user_context or "").strip() or "(none provided)")
+    )
+    try:
+        raw_response = (backend.label(prompt, []) or "").strip()
+    except Exception as e:
+        log.warning("Reviewer call failed: %s — keeping raw timeline.", e)
+        return None, None
+    if not raw_response:
+        log.warning("Reviewer returned empty response — keeping raw timeline.")
+        return None, None
+    reviewed = parse_subtask_lines(raw_response, duration_sec=duration_sec)
+    if not reviewed:
+        log.warning(
+            "Reviewer response had no parseable subtask lines — keeping raw timeline. "
+            "Raw reviewer output (first 300 chars): %r",
+            raw_response[:300],
+        )
+        return None, raw_response
+    log.info(
+        "Reviewer produced %d line(s) (raw had %d).",
+        len(reviewed), len(raw_segments),
+    )
+    return reviewed, raw_response
 
 
 def _pick_coarse_indices(total: int, k: int) -> list[int]:
@@ -490,6 +588,7 @@ def build_global_summary(
     overlay_enabled: bool,
     overlay_position: str,
     log: logging.Logger,
+    user_context: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Generate a whole-video timeline by describing coarse frames one at a time.
 
@@ -518,6 +617,7 @@ def build_global_summary(
             frame_index=frame_index,
             timestamp_sec=timestamp_sec,
             frames_manifest=manifest,
+            user_context=user_context,
         )
         try:
             text = backend.label(prompt, [stamped]).strip()
@@ -556,6 +656,9 @@ def main() -> int:
 
     cfg = load_config(args.config, overrides=build_overrides(args))
     prompt_template = load_prompt_template(cfg)
+    user_context = str(cfg.get("prompt", {}).get("video_context") or "").strip() or None
+    if user_context:
+        log.info("User-provided video context: %s", user_context)
 
     videos = discover_videos(args.input, cfg["video"]["extensions"])
     if not videos:
@@ -592,6 +695,21 @@ def main() -> int:
                 p_path,
             )
             prior_mode = "timeline"
+
+    review_cfg = labeling_cfg.get("review", {}) or {}
+    review_enabled = bool(review_cfg.get("enabled", True))
+    review_template: str | None = None
+    if review_enabled:
+        r_path = Path(review_cfg.get("prompt_path") or "prompts/review_timeline.txt")
+        if not r_path.is_absolute():
+            r_path = DEFAULT_CONFIG_PATH.parent / r_path
+        if r_path.exists():
+            review_template = r_path.read_text(encoding="utf-8")
+        else:
+            log.warning(
+                "Reviewer prompt not found at %s — disabling review pass.", r_path,
+            )
+            review_enabled = False
 
     sampling_cfg = cfg.get("sampling", {}) or {}
     overlay_enabled = bool(sampling_cfg.get("overlay_timestamp", True))
@@ -635,9 +753,12 @@ def main() -> int:
                         overlay_enabled=overlay_enabled,
                         overlay_position=overlay_position,
                         log=log,
+                        user_context=user_context,
                     )
 
                 subtask_timeline: list[dict] | None = None
+                raw_subtask_timeline: list[dict] | None = None
+                reviewer_info: dict | None = None
                 chunk_outputs: list[dict] | None = None
                 prompt = None
                 label_text = None
@@ -681,6 +802,7 @@ def main() -> int:
                                     chunk_count=len(ranges),
                                     global_summary=global_summary_text,
                                     log=log,
+                                    user_context=user_context,
                                 )
                             else:
                                 prior_summary_text = _timeline_summary(
@@ -699,6 +821,7 @@ def main() -> int:
                             chunk_start_timestamp_sec=chunk_start_ts,
                             chunk_end_timestamp_sec=chunk_end_ts,
                             prior_chunks_summary=prior_summary_text,
+                            user_context=user_context,
                         )
                         raw = backend.label(chunk_prompt, stamped)
                         segs = parse_subtask_lines(raw, duration_sec=extracted.meta.duration_sec)
@@ -728,6 +851,39 @@ def main() -> int:
                         "Merged %d raw subtask line(s) into %d timeline entries.",
                         len(all_segments), len(subtask_timeline),
                     )
+
+                    if review_enabled and review_template and subtask_timeline:
+                        log.info(
+                            "Running reviewer pass over %d stitched entries ...",
+                            len(subtask_timeline),
+                        )
+                        reviewed, reviewer_raw = review_timeline(
+                            backend=backend,
+                            review_template=review_template,
+                            raw_segments=subtask_timeline,
+                            global_summary=global_summary_text,
+                            duration_sec=extracted.meta.duration_sec,
+                            log=log,
+                            user_context=user_context,
+                        )
+                        if reviewed:
+                            raw_subtask_timeline = subtask_timeline
+                            subtask_timeline = reviewed
+                            reviewer_info = {
+                                "applied": True,
+                                "raw_count": len(raw_subtask_timeline),
+                                "reviewed_count": len(subtask_timeline),
+                                "reviewer_raw": reviewer_raw or "",
+                            }
+                        else:
+                            raw_subtask_timeline = None
+                            reviewer_info = {
+                                "applied": False,
+                                "reviewer_raw": reviewer_raw or "",
+                            }
+                    else:
+                        raw_subtask_timeline = None
+                        reviewer_info = None
 
                 elif label_mode in ("per_frame", "context_window"):
                     frame_outputs = []
@@ -780,6 +936,7 @@ def main() -> int:
                             context_end_timestamp_sec=context_end_timestamp_sec,
                             global_summary=global_summary_text,
                             frames_manifest=frames_manifest,
+                            user_context=user_context,
                         )
                         label_text = backend.label(prompt, context_frames)
                         frame_outputs.append(
@@ -817,6 +974,7 @@ def main() -> int:
                         extracted,
                         global_summary=global_summary_text,
                         frames_manifest=frames_manifest,
+                        user_context=user_context,
                     )
                     label_text = backend.label(prompt, stamped_all)
                     frame_outputs = None
@@ -831,7 +989,10 @@ def main() -> int:
                     label_mode=label_mode,
                     global_summary_text=global_summary_text,
                     global_snippets=global_snippets,
+                    user_context=user_context,
                     subtask_timeline=subtask_timeline,
+                    raw_subtask_timeline=raw_subtask_timeline,
+                    reviewer_info=reviewer_info,
                     chunk_outputs=chunk_outputs,
                     overwrite=overwrite,
                     emit_json_sidecar=emit_json,

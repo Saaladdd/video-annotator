@@ -106,6 +106,12 @@ prompt:
   #   {context_start_position}, {context_end_position}, {context_frame_count}
   #   {context_start_timestamp_sec}, {context_end_timestamp_sec}
   path: "prompts/default_sop.txt"
+  # Optional: one-sentence human description of the video, injected into every
+  # prompt via {user_context}. This is the single most effective way to prevent
+  # material-flow / object-identity errors on repetitive tasks. Example:
+  #   video_context: "A person restocks bottles from a shopping basket onto a store shelf."
+  # Overridden by CLI flag --context / --video-context.
+  video_context: ""
 
 # ---- Global video context (stage 1: whole-video understanding) ----
 # The app first samples a small set of coarse frames across the entire video,
@@ -155,6 +161,17 @@ labeling:
   # -- context_window settings (only used in that mode) --
   context_frames_before: 1
   context_frames_after: 1
+
+  # Post-process reviewer (text-only correction pass on the stitched timeline).
+  # After the chunked pass finishes and the segments are merged, this runs a
+  # single text-only backend call whose job is to fix pick/place direction
+  # errors, merge duplicates, and remove obvious hallucinations using the
+  # global-context summary as ground truth for material flow.
+  # It sends ZERO image frames, so it's cheap and works on the same worker.
+  # Only active in subtask_segments mode.
+  review:
+    enabled: true
+    prompt_path: "prompts/review_timeline.txt"
 
 # ---- Output ----
 output:
