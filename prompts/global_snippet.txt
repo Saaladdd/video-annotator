@@ -35,9 +35,12 @@ Include, when visible:
 
 NAMING DISCIPLINE
 - Use simple, generic object names (e.g. "mug", "screwdriver", "cabinet",
-  "bottle"). Prefer the SAME name across frames of the same clip.
-- Do NOT include color, size, or shape unless needed to distinguish similar
-  objects.
+  "bottle", "basket", "shelf"). Prefer the SAME name across frames of the
+  same clip.
+- Do NOT include color, size, shape, or material unless two similar objects
+  must be distinguished (e.g. "Phillips screwdriver" vs "flathead screwdriver").
+- WRONG: "blue shopping basket", "green plastic bottle", "wooden shelf"
+- RIGHT: "shopping basket", "bottle", "shelf"
 
 STRICT OUTPUT RULES
 - Output ONLY prose. No headers, no bullet points, no key/value fields, no

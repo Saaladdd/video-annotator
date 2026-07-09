@@ -24,7 +24,13 @@ GLOBAL VIDEO CONTEXT (whole clip, {duration_sec:.2f}s)
 {global_summary}
 
 ====================================================================
-NOISY FIRST-PASS TIMELINE ({num_entries} entries, from t=0 to t={duration_sec:.2f}s)
+{window_note}
+PRIOR REVIEWED LINES (for continuity — do not re-emit these; continue from them)
+====================================================================
+{prior_reviewed_tail}
+
+====================================================================
+NOISY FIRST-PASS TIMELINE ({num_entries} entries{window_range})
 ====================================================================
 {raw_timeline}
 
@@ -76,14 +82,23 @@ CORRECTION SOP — apply in this order
 6. WORDING AND NAMING.
    - Use the SAME name for an object throughout (e.g. always "bottle" or
      always "shampoo bottle" — not both).
-   - Prefer generic names ("bottle", "container") unless the global context
-     specifies a type ("shampoo bottle", "lotion bottle").
+   - Prefer generic functional names ("bottle", "basket", "shelf", "mug").
+   - REMOVE all color, size, shape, and material adjectives unless they
+     disambiguate two objects of the same type in the same clip.
+     WRONG: "blue shopping basket"  ->  RIGHT: "shopping basket"
+     WRONG: "green bottle"         ->  RIGHT: "bottle"
    - Sentences: "Action + Object + Location/Context + Hand.", ending with a
-     period. Specify hand only when clearly applicable.
+     period.
+   - EVERY manipulation line (pick, place, grasp, reach, extend arm) MUST
+     specify the hand: "with the left hand", "with the right hand", or
+     "with both hands". Never omit the hand on reach/extend lines.
+   - Drop redundant "Grasp" immediately followed by "Pick" of the same object
+     — keep "Pick" only.
 
 7. TIMESTAMPS.
-   - Preserve the time coverage of the original timeline; do not invent new
-     time ranges outside the observed [0, {duration_sec:.2f}] window.
+   - Preserve the FULL time coverage of the input window; output must span
+     from the first input timestamp to the last in this window.
+   - Do not invent new time ranges outside the observed [0, {duration_sec:.2f}] window.
    - Timestamps are continuous and non-overlapping in the output.
    - Format: [<start_sec>-<end_sec>] with 3 decimals.
 

@@ -42,12 +42,14 @@ from labeler.backends import build_backend
 from labeler.config import DEFAULT_CONFIG_PATH, load_config, load_prompt_template
 from labeler.output import write_label_txt
 from labeler.overlays import annotate_frame
+from labeler.normalize import normalize_timeline
 from labeler.segments import (
     chunk_ranges,
     format_timeline,
     median_dt,
     merge_segments,
     parse_subtask_lines,
+    segment_line_chunks,
 )
 from labeler.video import discover_videos, extract_frames
 
@@ -265,6 +267,23 @@ def parse_args() -> argparse.Namespace:
         help="Path to the reviewer prompt template. Default: prompts/review_timeline.txt.",
     )
 
+    # Deterministic SOP post-processing (strip colors, merge dupes, etc.)
+    p.add_argument(
+        "--normalize",
+        dest="normalize",
+        action="store_true",
+        default=None,
+        help="Apply deterministic SOP cleanup to the stitched timeline "
+             "(strip appearance adjectives, drop (none), merge duplicates). "
+             "Default: on via config.",
+    )
+    p.add_argument(
+        "--no-normalize",
+        dest="normalize",
+        action="store_false",
+        help="Disable deterministic SOP post-processing.",
+    )
+
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args()
 
@@ -351,6 +370,10 @@ def build_overrides(args: argparse.Namespace) -> dict:
             rv["enabled"] = bool(args.review)
         if args.review_prompt is not None:
             rv["prompt_path"] = args.review_prompt
+
+    if args.normalize is not None:
+        ov.setdefault("labeling", {})
+        ov["labeling"].setdefault("postprocess", {})["normalize"] = bool(args.normalize)
 
     gctx: dict = {}
     if args.global_context is not None:
@@ -516,6 +539,94 @@ def _model_summary(
         return timeline_text
 
 
+def _build_review_prompt(
+    review_template: str,
+    segments: list[dict],
+    global_summary: str | None,
+    duration_sec: float,
+    user_context: str | None,
+    *,
+    chunk_index: int = 1,
+    chunk_count: int = 1,
+    prior_reviewed_tail: str | None = None,
+) -> str:
+    raw_text = format_timeline(segments)
+    window_start = segments[0]["start"] if segments else 0.0
+    window_end = segments[-1]["end"] if segments else duration_sec
+    if chunk_count > 1:
+        window_note = (
+            f"WINDOW {chunk_index}/{chunk_count}: review ONLY the noisy lines "
+            f"in this window (t={window_start:.3f}s to t={window_end:.3f}s). "
+            f"Output corrected lines for this window ONLY — do not stop early. "
+            f"Every input line must appear corrected or merged with a neighbor."
+        )
+        window_range = (
+            f", window t={window_start:.3f}s to t={window_end:.3f}s"
+        )
+    else:
+        window_note = (
+            f"Review the ENTIRE timeline from t=0 to t={duration_sec:.2f}s. "
+            f"Output must cover the full clip — do not stop early."
+        )
+        window_range = f", from t=0 to t={duration_sec:.2f}s"
+    prior = prior_reviewed_tail or "(none — start of timeline)"
+    return (
+        review_template
+        .replace("{global_summary}", global_summary or "(global summary not available)")
+        .replace("{raw_timeline}", raw_text)
+        .replace("{num_entries}", str(len(segments)))
+        .replace("{duration_sec:.2f}", f"{duration_sec:.2f}")
+        .replace("{duration_sec}", f"{duration_sec:.2f}")
+        .replace("{user_context}", (user_context or "").strip() or "(none provided)")
+        .replace("{window_note}", window_note)
+        .replace("{prior_reviewed_tail}", prior)
+        .replace("{window_range}", window_range)
+    )
+
+
+def _review_timeline_once(
+    backend,
+    review_template: str,
+    segments: list[dict],
+    global_summary: str | None,
+    duration_sec: float,
+    log: logging.Logger,
+    user_context: str | None,
+    *,
+    chunk_index: int = 1,
+    chunk_count: int = 1,
+    prior_reviewed_tail: str | None = None,
+) -> tuple[list[dict], str] | tuple[None, None]:
+    if not segments:
+        return None, None
+    prompt = _build_review_prompt(
+        review_template,
+        segments,
+        global_summary,
+        duration_sec,
+        user_context,
+        chunk_index=chunk_index,
+        chunk_count=chunk_count,
+        prior_reviewed_tail=prior_reviewed_tail,
+    )
+    try:
+        raw_response = (backend.label(prompt, []) or "").strip()
+    except Exception as e:
+        log.warning("Reviewer call failed (window %d/%d): %s", chunk_index, chunk_count, e)
+        return None, None
+    if not raw_response:
+        log.warning("Reviewer returned empty response (window %d/%d).", chunk_index, chunk_count)
+        return None, None
+    reviewed = parse_subtask_lines(raw_response, duration_sec=duration_sec)
+    if not reviewed:
+        log.warning(
+            "Reviewer window %d/%d had no parseable lines. First 200 chars: %r",
+            chunk_index, chunk_count, raw_response[:200],
+        )
+        return None, raw_response
+    return reviewed, raw_response
+
+
 def review_timeline(
     backend,
     review_template: str,
@@ -524,47 +635,76 @@ def review_timeline(
     duration_sec: float,
     log: logging.Logger,
     user_context: str | None = None,
+    *,
+    max_lines_per_chunk: int = 35,
+    chunk_overlap: int = 3,
+    gap_tol: float = 0.0,
 ) -> tuple[list[dict], str] | tuple[None, None]:
     """Run a text-only correction pass on the stitched timeline.
 
-    Sends zero image frames to the backend — the reviewer sees only the
-    global summary and the noisy timeline text. Returns
-    (reviewed_segments, raw_reviewer_response) on success, or (None, None) if
-    the reviewer returned garbage / failed.
+    Long timelines are reviewed in overlapping windows so the model does not
+    truncate output. Returns (reviewed_segments, raw_reviewer_response) on
+    success, or (None, None) if the reviewer failed coverage checks.
     """
     if not raw_segments:
         return None, None
-    raw_text = format_timeline(raw_segments)
-    prompt = (
-        review_template
-        .replace("{global_summary}", global_summary or "(global summary not available)")
-        .replace("{raw_timeline}", raw_text)
-        .replace("{num_entries}", str(len(raw_segments)))
-        .replace("{duration_sec:.2f}", f"{duration_sec:.2f}")
-        .replace("{duration_sec}", f"{duration_sec:.2f}")
-        .replace("{user_context}", (user_context or "").strip() or "(none provided)")
-    )
-    try:
-        raw_response = (backend.label(prompt, []) or "").strip()
-    except Exception as e:
-        log.warning("Reviewer call failed: %s — keeping raw timeline.", e)
-        return None, None
-    if not raw_response:
-        log.warning("Reviewer returned empty response — keeping raw timeline.")
-        return None, None
-    reviewed = parse_subtask_lines(raw_response, duration_sec=duration_sec)
-    if not reviewed:
-        log.warning(
-            "Reviewer response had no parseable subtask lines — keeping raw timeline. "
-            "Raw reviewer output (first 300 chars): %r",
-            raw_response[:300],
+
+    windows = segment_line_chunks(raw_segments, max_lines_per_chunk, chunk_overlap)
+    chunk_count = len(windows)
+    all_reviewed: list[dict] = []
+    raw_parts: list[str] = []
+
+    for ci, window in enumerate(windows, start=1):
+        prior_tail = ""
+        if all_reviewed:
+            prior_tail = format_timeline(all_reviewed[-3:])
+        log.info(
+            "Reviewer window %d/%d: %d line(s), t=%.3f-%.3fs",
+            ci, chunk_count, len(window),
+            window[0]["start"], window[-1]["end"],
         )
-        return None, raw_response
+        reviewed, raw = _review_timeline_once(
+            backend=backend,
+            review_template=review_template,
+            segments=window,
+            global_summary=global_summary,
+            duration_sec=duration_sec,
+            log=log,
+            user_context=user_context,
+            chunk_index=ci,
+            chunk_count=chunk_count,
+            prior_reviewed_tail=prior_tail or None,
+        )
+        if raw:
+            raw_parts.append(f"=== REVIEW WINDOW {ci}/{chunk_count} ===\n{raw}")
+        if reviewed:
+            all_reviewed.extend(reviewed)
+        else:
+            log.warning(
+                "Reviewer window %d/%d failed — keeping normalized lines for that window.",
+                ci, chunk_count,
+            )
+            all_reviewed.extend(window)
+
+    merged = merge_segments(all_reviewed, gap_tol=gap_tol)
+    merged = normalize_timeline(merged, gap_tol=gap_tol)
+
+    if merged:
+        coverage_end = max(s["end"] for s in merged)
+        min_expected = duration_sec * 0.85
+        if coverage_end < min_expected:
+            log.warning(
+                "Reviewer output only covers %.1fs of %.1fs (%.0f%%) — "
+                "keeping pre-review normalized timeline.",
+                coverage_end, duration_sec, 100.0 * coverage_end / duration_sec,
+            )
+            return None, "\n\n".join(raw_parts)
+
     log.info(
-        "Reviewer produced %d line(s) (raw had %d).",
-        len(reviewed), len(raw_segments),
+        "Reviewer produced %d line(s) (raw had %d, %d window(s)).",
+        len(merged), len(raw_segments), chunk_count,
     )
-    return reviewed, raw_response
+    return merged, "\n\n".join(raw_parts)
 
 
 def _pick_coarse_indices(total: int, k: int) -> list[int]:
@@ -698,6 +838,8 @@ def main() -> int:
 
     review_cfg = labeling_cfg.get("review", {}) or {}
     review_enabled = bool(review_cfg.get("enabled", True))
+    review_max_lines = int(review_cfg.get("max_lines_per_chunk", 35))
+    review_chunk_overlap = int(review_cfg.get("chunk_overlap", 3))
     review_template: str | None = None
     if review_enabled:
         r_path = Path(review_cfg.get("prompt_path") or "prompts/review_timeline.txt")
@@ -710,6 +852,9 @@ def main() -> int:
                 "Reviewer prompt not found at %s — disabling review pass.", r_path,
             )
             review_enabled = False
+
+    postprocess_cfg = labeling_cfg.get("postprocess", {}) or {}
+    normalize_enabled = bool(postprocess_cfg.get("normalize", True))
 
     sampling_cfg = cfg.get("sampling", {}) or {}
     overlay_enabled = bool(sampling_cfg.get("overlay_timestamp", True))
@@ -852,6 +997,17 @@ def main() -> int:
                         len(all_segments), len(subtask_timeline),
                     )
 
+                    if normalize_enabled and subtask_timeline:
+                        before = len(subtask_timeline)
+                        subtask_timeline = normalize_timeline(
+                            subtask_timeline, gap_tol=gap_tol,
+                        )
+                        log.info(
+                            "SOP normalize: %d -> %d timeline entries "
+                            "(appearance stripped, dupes merged).",
+                            before, len(subtask_timeline),
+                        )
+
                     if review_enabled and review_template and subtask_timeline:
                         log.info(
                             "Running reviewer pass over %d stitched entries ...",
@@ -865,6 +1021,9 @@ def main() -> int:
                             duration_sec=extracted.meta.duration_sec,
                             log=log,
                             user_context=user_context,
+                            max_lines_per_chunk=review_max_lines,
+                            chunk_overlap=review_chunk_overlap,
+                            gap_tol=gap_tol,
                         )
                         if reviewed:
                             raw_subtask_timeline = subtask_timeline

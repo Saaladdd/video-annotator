@@ -74,8 +74,12 @@ Every sentence is grammatically complete and ends with a full stop.
     Correct  : "Pick a screwdriver from the toolbox with the right hand."
     Incorrect: "Look for a screwdriver.", "Decide where to place the mug."
 3.2 Level of detail.
-    Correct     : "Pick the screwdriver from the toolbox."
-    Too detailed: "Extend arm toward screwdriver.", "Close fingers around it."
+    Correct     : "Pick the screwdriver from the toolbox with the right hand."
+    Too detailed: "Close fingers around it."
+    If you annotate a reach before a grasp, include the hand:
+        "Reach toward the basket with the right hand."  (hand REQUIRED)
+    Avoid emitting BOTH "Grasp X" and "Pick X" for the same object in the
+    same cycle — use "Pick" only.
 3.3 Consistent object names throughout the sequence.
     Correct  : "Pick a mug." ... "Place the mug on the counter."
     Incorrect: "Pick a mug." ... "Place the cup on the counter."
@@ -83,6 +87,12 @@ Every sentence is grammatically complete and ends with a full stop.
     Correct  : "Pick a screwdriver."
     Incorrect: "Pick a yellow screwdriver.", "Pick a blue bottle of shampoo."
     Exception: "Pick the Phillips screwdriver." vs "Pick the flathead screwdriver."
+    RULE: Describe objects by FUNCTION and LOCATION only. Never add adjectives
+    the viewer can see but the task does not require (color, material, size).
+    WRONG: "Pick a bottle from the blue shopping basket."
+    RIGHT: "Pick a bottle from the shopping basket."
+    WRONG: "Place the mug on the wooden countertop."
+    RIGHT: "Place the mug on the countertop."
 
 4. ACTION CATEGORIES
 4.1 Manipulation: pick, place, grasp, release, hold, carry, transfer, push,
@@ -93,10 +103,16 @@ Every sentence is grammatically complete and ends with a full stop.
     tighten screw, loosen screw, apply caulk, paint wall, sow seeds,
     load washing machine, scan barcode, measure board.
 
-5. HAND USAGE
-Specify the acting hand: "with the left hand", "with the right hand", or
-"with both hands". If no hand interaction occurs (e.g. "Walk to the sink."),
-do not specify a hand.
+5. HAND USAGE (REQUIRED on every manipulation line)
+Specify the acting hand on EVERY line where a hand performs or reaches toward
+an action: "with the left hand", "with the right hand", or "with both hands".
+    Correct  : "Extend arm toward the basket with the right hand."
+    Correct  : "Pick a bottle from the basket with the left hand."
+    Incorrect: "Extend arm toward the basket."   (missing hand)
+    Incorrect: "Pick a bottle from the basket."    (missing hand)
+If no hand interaction occurs (e.g. "Walk to the sink."), do not specify a hand.
+When the active hand is visible in adjacent frames, use the SAME hand for the
+reach, grasp, pick, and place that form one cycle.
 
 6. INTENT AND ACTION START TIME
 - A subtask may begin once the intended target is reasonably clear, even

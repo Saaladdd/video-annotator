@@ -97,6 +97,28 @@ def merge_segments(segments: list[dict], gap_tol: float = 0.0) -> list[dict]:
     return merged
 
 
+def segment_line_chunks(
+    segments: list[dict],
+    max_lines: int,
+    overlap: int,
+) -> list[list[dict]]:
+    """Split a timeline into overlapping line windows for chunked text review."""
+    if not segments or max_lines <= 0 or len(segments) <= max_lines:
+        return [segments] if segments else []
+    overlap = max(0, min(overlap, max_lines - 1))
+    step = max(1, max_lines - overlap)
+    chunks: list[list[dict]] = []
+    i = 0
+    while i < len(segments):
+        chunk = segments[i : i + max_lines]
+        if chunk:
+            chunks.append(chunk)
+        if i + max_lines >= len(segments):
+            break
+        i += step
+    return chunks
+
+
 def format_timeline(segments: list[dict]) -> str:
     """Render segments as the canonical '[start-end] sentence' timeline text."""
     if not segments:

@@ -168,10 +168,23 @@ labeling:
   # errors, merge duplicates, and remove obvious hallucinations using the
   # global-context summary as ground truth for material flow.
   # It sends ZERO image frames, so it's cheap and works on the same worker.
-  # Only active in subtask_segments mode.
+  # Text-only LLM correction pass after normalize. Timelines are reviewed in
+  # overlapping windows so the model does not truncate long outputs.
+  # Disable with --no-review. Only active in subtask_segments mode.
   review:
     enabled: true
     prompt_path: "prompts/review_timeline.txt"
+    # Max lines per reviewer window (keeps output within model token budget).
+    max_lines_per_chunk: 35
+    # Overlap between reviewer windows for continuity at boundaries.
+    chunk_overlap: 3
+
+  # Deterministic SOP cleanup applied after chunk merge (and before review).
+  # Strips color/size/shape adjectives, drops (none) lines, fixes zero-duration
+  # segments, and merges consecutive duplicates. Task-agnostic — works for any
+  # egocentric clip. Disable with --no-normalize.
+  postprocess:
+    normalize: true
 
 # ---- Output ----
 output:
