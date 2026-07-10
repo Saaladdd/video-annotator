@@ -75,11 +75,9 @@ Every sentence is grammatically complete and ends with a full stop.
     Incorrect: "Look for a screwdriver.", "Decide where to place the mug."
 3.2 Level of detail.
     Correct     : "Pick the screwdriver from the toolbox with the right hand."
-    Too detailed: "Close fingers around it."
-    If you annotate a reach before a grasp, include the hand:
-        "Reach toward the basket with the right hand."  (hand REQUIRED)
+    Too detailed: "Extend arm toward screwdriver.", "Close fingers around it."
     Avoid emitting BOTH "Grasp X" and "Pick X" for the same object in the
-    same cycle — use "Pick" only.
+    same cycle — use "Pick" only when the grasp is clearly part of the pick.
 3.3 Consistent object names throughout the sequence.
     Correct  : "Pick a mug." ... "Place the mug on the counter."
     Incorrect: "Pick a mug." ... "Place the cup on the counter."
@@ -103,16 +101,16 @@ Every sentence is grammatically complete and ends with a full stop.
     tighten screw, loosen screw, apply caulk, paint wall, sow seeds,
     load washing machine, scan barcode, measure board.
 
-5. HAND USAGE (REQUIRED on every manipulation line)
-Specify the acting hand on EVERY line where a hand performs or reaches toward
-an action: "with the left hand", "with the right hand", or "with both hands".
-    Correct  : "Extend arm toward the basket with the right hand."
-    Correct  : "Pick a bottle from the basket with the left hand."
-    Incorrect: "Extend arm toward the basket."   (missing hand)
-    Incorrect: "Pick a bottle from the basket."    (missing hand)
+5. HAND USAGE (egocentric — only when clearly visible)
+"Left" and "right" refer to the CAMERA WEARER's hands (the person wearing
+the head-mounted camera), NOT the viewer's screen-left/screen-right.
+Specify the acting hand ONLY when you can clearly see which hand is
+interacting in the frames: "with the left hand", "with the right hand",
+or "with both hands".
+    Correct  : "Pick a bottle from the basket with the right hand." (hand visible)
+    Correct  : "Pick a bottle from the basket." (hand not clearly visible)
+    Incorrect: Guessing a hand when uncertain or copying from prior chunks.
 If no hand interaction occurs (e.g. "Walk to the sink."), do not specify a hand.
-When the active hand is visible in adjacent frames, use the SAME hand for the
-reach, grasp, pick, and place that form one cycle.
 
 6. INTENT AND ACTION START TIME
 - A subtask may begin once the intended target is reasonably clear, even
@@ -126,8 +124,28 @@ reach, grasp, pick, and place that form one cycle.
 - Do NOT annotate eye gaze, head turns, or facial expressions unless
   essential (e.g. "Read measurement on ruler.", "Inspect alignment mark.").
 
-8. TIMESTAMP GUIDELINES
+8. TIMESTAMP GUIDELINES (CRITICAL — ground in the frame manifest)
 - Report timestamps in SECONDS with 3 decimals (e.g. 12.500).
+- Timestamps MUST come from the Frame manifest below. Use the timestamp of
+  the frame where an action STARTS as <start_sec> and the timestamp of the
+  frame where it ENDS (or is clearly complete) as <end_sec>.
+- DO NOT invent a regular 1-second or 0.5-second grid. Frames are sampled
+  sparsely — you must NOT emit one subtask per frame unless each frame shows
+  a genuinely distinct new action.
+- WRONG (frame-grid hallucination — never do this):
+    [10.000-10.500] Pick a bottle from the basket with the right hand.
+    [10.500-11.000] Place the bottle on the shelf with the right hand.
+    [11.000-11.500] Pick a bottle from the basket with the right hand.
+    [11.500-12.000] Place the bottle on the shelf with the right hand.
+  RIGHT (each action spans the frames where it is visibly in progress):
+    [10.000-12.500] Pick a bottle from the basket with the right hand.
+    [12.500-15.000] Place the bottle on the shelf with the right hand.
+- A pick or place typically spans MULTIPLE consecutive frames (reach, contact,
+  transport, release). Assign <end_sec> to the last frame where the action is
+  still visibly completing — not the very next sampled frame by default.
+- Only annotate actions you actually OBSERVE changing between frames. If the
+  person is idle, repositioning, or mid-reach across several frames, emit
+  ONE line spanning those frames — or emit nothing for that period.
 - Timestamps must be continuous and sequential; avoid unnecessary gaps.
 - Each line = one distinct observable subtask.
 - Never emit a timestamp outside this chunk's range
@@ -145,17 +163,24 @@ The most common failure mode is confusing pick vs place direction. Rules:
     * Hand starts near a surface and moves AWAY holding the object -> PICK.
     * Hand starts holding the object and moves TOWARD a surface, then
       releases -> PLACE.
+- PLACE LINE TEMPLATE (mandatory): after a pick, the object is IN THE HAND.
+  Place lines must NOT repeat the pick origin. Use:
+      Place the <object> on/in <destination> with <hand>.
+  WRONG: "Place a bottle from the shopping basket onto the shelf."
+  RIGHT: "Place the bottle on the shelf with the right hand."
+- PICK LINE TEMPLATE:
+      Pick a <object> from <origin> with <hand>.
 - Anchor to material flow from the GLOBAL VIDEO CONTEXT (e.g. restocking =
   basket -> shelf; shopping = shelf -> basket) and stay consistent.
 
 10. GRANULARITY (aligned with the SOP)
-- One line per REAL physical event (each individual grasp, release, walk,
+- One line per REAL physical event (each individual pick, place, walk,
   open, etc.). Fine granularity is desired for robotics learning.
-- Do NOT aggregate multiple picks and places into a single "restock" line.
-  Emit each pick and each place as its own subtask, in order.
+- Do NOT aggregate multiple picks and places into a single summary line.
 - Do NOT emit two consecutive lines with the identical action-object-location
   triple. If a subtask visibly continues across multiple frames without
   change, emit ONE line spanning them.
+- Fewer accurate lines are better than many guessed lines.
 
 11. CHECKLIST (apply before answering)
 - Action is observable.

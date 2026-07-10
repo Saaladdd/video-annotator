@@ -56,8 +56,15 @@ class LabelResponse(BaseModel):
 
 
 def _decode_frame(b64: str) -> Image.Image:
-    raw = base64.b64decode(b64)
-    return Image.open(io.BytesIO(raw)).convert("RGB")
+    raw = base64.b64decode(b64, validate=True)
+    if not raw:
+        raise ValueError("empty frame payload after base64 decode")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        return img.convert("RGB")
+    except Exception as e:
+        raise ValueError(f"broken JPEG ({len(raw)} bytes): {e}") from e
 
 
 def _require_auth(authorization_header: Optional[str]) -> None:
@@ -101,7 +108,17 @@ def _build_app():
         if _backend is None:
             raise HTTPException(status_code=503, detail="Backend not initialised.")
         try:
-            frames = [_decode_frame(b) for b in req.frames]
+            frames = []
+            for i, b64 in enumerate(req.frames):
+                try:
+                    frames.append(_decode_frame(b64))
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to decode frame {i + 1}/{len(req.frames)}: {e}",
+                    ) from e
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to decode frames: {e}")
         try:

@@ -82,7 +82,7 @@ sampling:
   end_sec: null
   # Attach a "t=1.500s frame 24/360" label to every frame image sent to the
   # model. Disabled by default to keep frame pixels untouched.
-  overlay_timestamp: false
+  overlay_timestamp: true
   # Where the label goes. The extend-* modes add a small strip outside the
   # frame so no original pixel is covered (recommended for annotation).
   # Options: extend-bottom | extend-top |
@@ -172,7 +172,7 @@ labeling:
   # overlapping windows so the model does not truncate long outputs.
   # Disable with --no-review. Only active in subtask_segments mode.
   review:
-    enabled: true
+    enabled: false
     prompt_path: "prompts/review_timeline.txt"
     # Max lines per reviewer window (keeps output within model token budget).
     max_lines_per_chunk: 35
@@ -180,11 +180,18 @@ labeling:
     chunk_overlap: 3
 
   # Deterministic SOP cleanup applied after chunk merge (and before review).
-  # Strips color/size/shape adjectives, drops (none) lines, fixes zero-duration
-  # segments, and merges consecutive duplicates. Task-agnostic — works for any
-  # egocentric clip. Disable with --no-normalize.
+  # Strips color/size/shape adjectives, fixes place wording, resolves overlaps,
+  # thins 1-frame pick/place grids, and expands action spans into idle gaps.
   postprocess:
     normalize: true
+    # Minimum duration (seconds) for a single pick/place after span refinement.
+    min_action_sec: 1.0
+    # Max complete pick+place cycles per second when thinning frame-grid bursts.
+    max_cycles_per_sec: 0.55
+    thin_frame_grid: true
+    refine_spans: true
+    # Snap action START times to sampled frames only (ends may span multiple frames).
+    snap_frames: true
 
 # ---- Output ----
 output:

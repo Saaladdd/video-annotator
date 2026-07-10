@@ -52,11 +52,13 @@ CORRECTION SOP — apply in this order
 2. FIX PICK/PLACE DIRECTION ERRORS. The most common first-pass mistake is:
        "Pick X from the shelf."   then   "Place X on the shelf."     (INVALID)
        "Pick X from the basket."  then   "Place X in the basket."    (INVALID)
+       "Place X from the basket onto the shelf."                   (INVALID wording)
    These are hallucinations. The origin of a pick and the destination of the
    immediately-following place MUST be DIFFERENT. Rewrite them so they match
    the inferred material flow. Example, if the flow is basket -> shelf:
        "Pick a bottle from the basket with the right hand."
        "Place the bottle on the shelf with the right hand."
+   NEVER put "from <origin>" on a Place line — the object is already in hand.
 
 3. MERGE CONSECUTIVE DUPLICATES.
    - Combine consecutive lines whose action-object-location triple is
@@ -71,13 +73,12 @@ CORRECTION SOP — apply in this order
    - Drop lines that describe an impossible action given the surrounding
      context (e.g. picking from a surface that was just placed onto).
 
-5. KEEP FINE GRANULARITY.
-   - Do NOT aggregate many pick+place cycles into a single "restock" summary
-     line. Each individual grasp and each individual release should remain a
-     separate subtask, unless it is truly the SAME event continuing across
-     adjacent frames.
-   - Aim to preserve the roughly-1-second-per-action granularity of the
-     original, but with correct semantics.
+5. KEEP OBSERVED GRANULARITY.
+   - Do NOT invent a regular 1-second pick/place grid. Only keep lines that
+     correspond to real observed actions in the input window.
+   - Each bottle/item cycle may be Pick + Place, but only when the input
+     shows distinct pick and place events — not one per second by default.
+   - Remove redundant Grasp before Pick of the same object.
 
 6. WORDING AND NAMING.
    - Use the SAME name for an object throughout (e.g. always "bottle" or
@@ -90,10 +91,12 @@ CORRECTION SOP — apply in this order
    - Sentences: "Action + Object + Location/Context + Hand.", ending with a
      period.
    - EVERY manipulation line (pick, place, grasp, reach, extend arm) MUST
-     specify the hand: "with the left hand", "with the right hand", or
-     "with both hands". Never omit the hand on reach/extend lines.
+     specify the hand ONLY when clearly visible in context — never guess.
+     Left/right = camera wearer's hands, not screen-left/right.
    - Drop redundant "Grasp" immediately followed by "Pick" of the same object
      — keep "Pick" only.
+
+   - Drop redundant "Grasp" immediately before "Pick" of the same object.
 
 7. TIMESTAMPS.
    - Preserve the FULL time coverage of the input window; output must span

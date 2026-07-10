@@ -32,19 +32,46 @@ from typing import List, Optional
 
 import requests
 from PIL import Image
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .base import LabelerBackend
 
 log = logging.getLogger(__name__)
 
 
+def _is_transient_decode_error(exc: BaseException) -> bool:
+    if not isinstance(exc, RuntimeError):
+        return False
+    msg = str(exc).lower()
+    return "http 400" in msg and ("decode frame" in msg or "decode frames" in msg)
+
+
 def _pil_to_b64_jpeg(img: Image.Image, quality: int = 90) -> str:
-    buf = io.BytesIO()
+    """Encode a PIL image as base64 JPEG with conservative, widely-decodable settings."""
     if img.mode != "RGB":
         img = img.convert("RGB")
-    img.save(buf, format="JPEG", quality=quality)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    buf = io.BytesIO()
+    # subsampling=0 + progressive=False maximises compatibility with older Pillow on workers.
+    img.save(
+        buf,
+        format="JPEG",
+        quality=quality,
+        optimize=False,
+        progressive=False,
+        subsampling=0,
+    )
+    raw = buf.getvalue()
+    # Fail fast on the client if we produced a corrupt JPEG.
+    verify = io.BytesIO(raw)
+    with Image.open(verify) as decoded:
+        decoded.load()
+    return base64.b64encode(raw).decode("ascii")
 
 
 class RemoteBackend(LabelerBackend):
@@ -104,8 +131,11 @@ class RemoteBackend(LabelerBackend):
         @retry(
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=1, min=2, max=30),
-            retry=retry_if_exception_type(
-                (requests.ConnectionError, requests.Timeout, requests.HTTPError)
+            retry=(
+                retry_if_exception_type(
+                    (requests.ConnectionError, requests.Timeout, requests.HTTPError)
+                )
+                | retry_if_exception(_is_transient_decode_error)
             ),
             reraise=True,
         )
@@ -119,7 +149,6 @@ class RemoteBackend(LabelerBackend):
             if r.status_code >= 500:
                 r.raise_for_status()
             if r.status_code >= 400:
-                # Non-retriable client error — surface the body for debuggability.
                 raise RuntimeError(
                     f"Remote worker returned HTTP {r.status_code}: {r.text[:500]}"
                 )

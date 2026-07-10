@@ -42,7 +42,7 @@ from labeler.backends import build_backend
 from labeler.config import DEFAULT_CONFIG_PATH, load_config, load_prompt_template
 from labeler.output import write_label_txt
 from labeler.overlays import annotate_frame
-from labeler.normalize import normalize_timeline
+from labeler.normalize import normalize_timeline, strip_appearance_adjectives
 from labeler.segments import (
     chunk_ranges,
     format_timeline,
@@ -639,6 +639,8 @@ def review_timeline(
     max_lines_per_chunk: int = 35,
     chunk_overlap: int = 3,
     gap_tol: float = 0.0,
+    frame_times: list[float] | None = None,
+    normalize_opts: dict | None = None,
 ) -> tuple[list[dict], str] | tuple[None, None]:
     """Run a text-only correction pass on the stitched timeline.
 
@@ -687,7 +689,13 @@ def review_timeline(
             all_reviewed.extend(window)
 
     merged = merge_segments(all_reviewed, gap_tol=gap_tol)
-    merged = normalize_timeline(merged, gap_tol=gap_tol)
+    merged = normalize_timeline(
+        merged,
+        gap_tol=gap_tol,
+        frame_times=frame_times,
+        duration_sec=duration_sec,
+        **(normalize_opts or {}),
+    )
 
     if merged:
         coverage_end = max(s["end"] for s in merged)
@@ -761,6 +769,7 @@ def build_global_summary(
         )
         try:
             text = backend.label(prompt, [stamped]).strip()
+            text = strip_appearance_adjectives(text)
         except Exception as e:
             log.warning("Global-context snippet failed at t=%.3fs: %s", timestamp_sec, e)
             text = "(snippet unavailable)"
@@ -855,9 +864,16 @@ def main() -> int:
 
     postprocess_cfg = labeling_cfg.get("postprocess", {}) or {}
     normalize_enabled = bool(postprocess_cfg.get("normalize", True))
+    normalize_opts = {
+        "min_action_sec": float(postprocess_cfg.get("min_action_sec", 1.0)),
+        "max_cycles_per_sec": float(postprocess_cfg.get("max_cycles_per_sec", 0.55)),
+        "thin_frame_grid": bool(postprocess_cfg.get("thin_frame_grid", True)),
+        "refine_spans": bool(postprocess_cfg.get("refine_spans", True)),
+        "snap_frames": bool(postprocess_cfg.get("snap_frames", True)),
+    }
 
     sampling_cfg = cfg.get("sampling", {}) or {}
-    overlay_enabled = bool(sampling_cfg.get("overlay_timestamp", True))
+    overlay_enabled = bool(sampling_cfg.get("overlay_timestamp", False))
     overlay_position = str(sampling_cfg.get("overlay_position", "extend-bottom"))
 
     global_cfg = cfg.get("global_context", {}) or {}
@@ -1000,7 +1016,11 @@ def main() -> int:
                     if normalize_enabled and subtask_timeline:
                         before = len(subtask_timeline)
                         subtask_timeline = normalize_timeline(
-                            subtask_timeline, gap_tol=gap_tol,
+                            subtask_timeline,
+                            gap_tol=gap_tol,
+                            frame_times=list(extracted.timestamps_sec),
+                            duration_sec=extracted.meta.duration_sec,
+                            **normalize_opts,
                         )
                         log.info(
                             "SOP normalize: %d -> %d timeline entries "
@@ -1024,6 +1044,8 @@ def main() -> int:
                             max_lines_per_chunk=review_max_lines,
                             chunk_overlap=review_chunk_overlap,
                             gap_tol=gap_tol,
+                            frame_times=list(extracted.timestamps_sec),
+                            normalize_opts=normalize_opts,
                         )
                         if reviewed:
                             raw_subtask_timeline = subtask_timeline
